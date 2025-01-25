@@ -27,6 +27,7 @@
 #include "llvm/IR/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
+#include <iostream>
 
 using namespace llvm;
 #define DEBUG_TYPE "inline"
@@ -391,6 +392,13 @@ llvm::shouldInline(CallBase &CB, TargetTransformInfo &CalleeTTI,
   }
 
   if (!IC) {
+    if (Caller && Caller->getName().str().compare(
+                      "_Z16arch_spin_unlockP16arch_spin_lock_t") == 0) {
+      std::cout << "NOT Inlining because of cost callee "
+                << Callee->getName().str() << " into caller "
+                << Caller->getName().str() << " inlining cost "
+                << inlineCostStr(IC) << std::endl;
+    }
     LLVM_DEBUG(dbgs() << "    NOT Inlining " << inlineCostStr(IC)
                       << ", Call: " << CB << "\n");
     if (IC.isNever()) {
@@ -415,6 +423,11 @@ llvm::shouldInline(CallBase &CB, TargetTransformInfo &CalleeTTI,
   int TotalSecondaryCost = 0;
   if (EnableDeferral && shouldBeDeferred(Caller, CalleeTTI, IC,
                                          TotalSecondaryCost, GetInlineCost)) {
+    if (Caller && Caller->getName().str().compare(
+                      "_Z16arch_spin_unlockP16arch_spin_lock_t") == 0) {
+      std::cout << "NOT Inlining deferred " << Callee->getName().str()
+                << " into caller " << Caller->getName().str() << std::endl;
+    }
     LLVM_DEBUG(dbgs() << "    NOT Inlining: " << CB
                       << " Cost = " << IC.getCost()
                       << ", outer Cost = " << TotalSecondaryCost << '\n');
@@ -429,6 +442,13 @@ llvm::shouldInline(CallBase &CB, TargetTransformInfo &CalleeTTI,
     return std::nullopt;
   }
 
+  if (Caller && Caller->getName().str().compare(
+                    "_Z16arch_spin_unlockP16arch_spin_lock_t") == 0) {
+    std::cout << "Inlining callee " << Callee->getName().str()
+              << " into caller " << Caller->getName().str()
+              << Caller->getName().str() << " inlining cost "
+              << inlineCostStr(IC) << std::endl;
+  }
   LLVM_DEBUG(dbgs() << "    Inlining " << inlineCostStr(IC) << ", Call: " << CB
                     << '\n');
   return IC;
