@@ -79,6 +79,16 @@ foreach(variable ${_FUCHSIA_BOOTSTRAP_PASSTHROUGH})
   endif()
 endforeach()
 
+if(FUCHSIA_ENABLE_PGO)
+  foreach(variableName ${_FUCHSIA_BOOTSTRAP_PASSTHROUGH})
+    if(${variableName})
+      string(REPLACE ";" "\;" value ${${variableName}})
+      list(APPEND PASSTHROUGH_VARIABLES
+      ${variableName}=${value})
+    endif()
+  endforeach()
+endif()
+
 set(CLANG_DEFAULT_CXX_STDLIB libc++ CACHE STRING "")
 set(CLANG_DEFAULT_LINKER lld CACHE STRING "")
 set(CLANG_DEFAULT_OBJCOPY llvm-objcopy CACHE STRING "")
@@ -260,6 +270,8 @@ if(FUCHSIA_ENABLE_PGO)
     ${EXTRA_ARGS}
     -C ${CMAKE_CURRENT_LIST_DIR}/Fuchsia-stage2-instrumented.cmake
     CACHE STRING "")
+  set(CLANG_BOOTSTRAP_PASSTHROUGH
+    ${PASSTHROUGH_VARIABLES} CACHE STRING "")
 else()
   set(CLANG_BOOTSTRAP_CMAKE_ARGS
     ${EXTRA_ARGS}
