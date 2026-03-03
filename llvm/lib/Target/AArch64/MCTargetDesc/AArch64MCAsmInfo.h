@@ -184,8 +184,6 @@ enum {
 /// (e.g. ":got:", ":lo12:").
 StringRef getSpecifierName(Specifier S);
 
-Specifier parsePercentSpecifierName(StringRef);
-
 inline Specifier getSymbolLoc(Specifier S) {
   return static_cast<Specifier>(S & AArch64::S_SymLocBits);
 }
