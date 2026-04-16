@@ -98,6 +98,8 @@ if(WIN32 OR LLVM_WINSYSROOT)
       -ivfsoverlay
       -Xclang
       ${LLVM_VFSOVERLAY}
+      -Xclang
+      -Wno-expansion-to-defined
       # TODO: /winsysroot should be set by HandleLLVMOptions.cmake automatically
       # but it current has a bug that prevents it from working under cross
       # compilation. Set this flag manually for now.
