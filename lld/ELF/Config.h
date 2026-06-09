@@ -343,6 +343,7 @@ struct Config {
   bool bpVerboseSectionOrderer = false;
   bool branchToBranch = false;
   bool checkSections;
+  bool spillColdestFirst = false;
   bool checkDynamicRelocs;
   std::optional<llvm::DebugCompressionType> compressDebugSections;
   llvm::SmallVector<
@@ -656,6 +657,7 @@ struct Ctx : CommonLinkerContext {
   LinkerDriver driver;
   LinkerScript *script;
   std::unique_ptr<TargetInfo> target;
+  std::optional<llvm::DenseMap<const InputSectionBase *, uint64_t>> irpgoProfileMapping;
 
   // These variables are initialized by Writer and should not be used before
   // Writer is initialized.
