@@ -1,0 +1,18 @@
+; REQUIRES: opencsd, arm-registered-target
+; RUN: yaml2obj %S/Inputs/etm-opencsd.yaml -o %t.bin
+
+; Verify ETM trace decoding generates data profiles.
+; RUN: printf "\000\000\000\000\000\000\000\000\000\000\000\200\001\000\203\001\232\117\000\000\226\201\232\374\376\372\370\375\375\326\375\375\301" > %t.trace
+
+; Run the generator to produce the output profile and verify data profile is generated.
+; RUN: llvm-profgen --etm=%t.trace --binary=%t.bin --output=%t.prof --format=text
+; RUN: ls %t-data.prof
+; RUN: llvm-profdata show %t-data.prof | FileCheck %s --check-prefix=DATA
+
+; Verify data profile generation with .profdata extension.
+; RUN: llvm-profgen --etm=%t.trace --binary=%t.bin --output=%t2.profdata
+; RUN: ls %t2-data.profdata
+; RUN: llvm-profdata show %t2-data.profdata | FileCheck %s --check-prefix=DATA
+
+; DATA: Instrumentation level: Front-end
+; DATA: # MemProfSummary:

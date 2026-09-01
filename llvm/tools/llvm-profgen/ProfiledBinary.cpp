@@ -23,6 +23,7 @@
 #include "llvm/Object/COFF.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/TargetParser/Triple.h"
@@ -255,6 +256,35 @@ void ProfiledBinary::load(StringRef TripleStr) {
   // Find the preferred load address for text sections.
   setPreferredTextSegmentAddresses(Obj);
 
+  // Cache section ranges to map data addresses to section names.
+  for (const SectionRef &Section : Obj->sections()) {
+    Expected<StringRef> NameOrErr = Section.getName();
+    if (!NameOrErr) {
+      consumeError(NameOrErr.takeError());
+      continue;
+    }
+
+    uint64_t Size = Section.getSize();
+    if (Size == 0)
+      continue;
+
+    if (!Section.isText() && !Section.isData() && !Section.isBSS())
+      continue;
+
+    uint64_t Address = Section.getAddress();
+    StringRef Contents;
+    if (Expected<StringRef> ContentOrErr = Section.getContents())
+      Contents = *ContentOrErr;
+    else
+      consumeError(ContentOrErr.takeError());
+
+    SectionRanges.push_back(
+        {*NameOrErr, Address, Address + Size, Contents, Section.isText()});
+  }
+  llvm::sort(SectionRanges, [](const SectionRange &L, const SectionRange &R) {
+    return L.StartAddress < R.StartAddress;
+  });
+
   // For shared libraries, read build ID to filter perfscript addresses
   // in [buildid:]addr format. Main executables (including PIE) use empty
   // FilterBuildID since their addresses have no buildid prefix.
@@ -308,6 +338,12 @@ void ProfiledBinary::load(StringRef TripleStr) {
   warnNoFuncEntry();
 
   // TODO: decode other sections.
+}
+
+uint64_t ProfiledBinary::getFirstTextAddress() const {
+  const auto *It = llvm::find_if(
+      SectionRanges, [](const SectionRange &SR) { return SR.IsText; });
+  return It != SectionRanges.end() ? It->StartAddress : 0;
 }
 
 bool ProfiledBinary::inlineContextEqual(uint64_t Address1, uint64_t Address2) {
@@ -393,6 +429,20 @@ void ProfiledBinary::setPreferredTextSegmentAddresses(const ELFFile<ELFT> &Obj,
 
   if (PreferredTextSegmentAddresses.empty())
     exitWithError("no executable segment found", FileName);
+
+  // Sort segments by preferred load address to guarantee that
+  // getPreferredBaseAddress() returns the absolute minimum executable load
+  // address.
+  SmallVector<std::pair<uint64_t, uint64_t>, 4> Segments;
+  Segments.reserve(PreferredTextSegmentAddresses.size());
+  for (auto [Addr, Offset] :
+       llvm::zip(PreferredTextSegmentAddresses, TextSegmentOffsets))
+    Segments.emplace_back(Addr, Offset);
+  llvm::sort(Segments);
+  for (auto [Idx, Seg] : llvm::enumerate(Segments)) {
+    PreferredTextSegmentAddresses[Idx] = Seg.first;
+    TextSegmentOffsets[Idx] = Seg.second;
+  }
 }
 
 uint64_t ProfiledBinary::CanonicalizeNonTextAddress(uint64_t Address) {
@@ -644,6 +694,15 @@ bool ProfiledBinary::dissassembleSymbol(std::size_t SI, ArrayRef<uint8_t> Bytes,
 
       // Record instruction size.
       AddressToInstSizeMap[Address] = Size;
+
+      // Check if this instruction references static/global data in memory.
+      if (std::optional<uint64_t> TargetAddr =
+              MIA->evaluateMemoryOperandAddress(Inst, STI.get(), Address,
+                                                Size)) {
+        StringRef SymName = resolveDataSymbol(*TargetAddr);
+        if (!SymName.empty())
+          AddressToDataSymbolMap[Address] = SymName;
+      }
 
       // Populate address maps.
       CodeAddressVec.push_back(Address);
@@ -952,14 +1011,14 @@ void ProfiledBinary::loadSymbolsFromSymtab(const ObjectFile *Obj) {
       }
     }
 
-    if (Size == 0 || Type != SymbolRef::ST_Function)
+    if (Size == 0 || Type != SymbolRef::ST_Function ||
+        StartAddr < getFirstTextAddress())
       continue;
 
     const uint64_t EndAddr = StartAddr + Size;
     const StringRef SymName =
         FunctionSamples::getCanonicalFnName(Name, Suffixes);
-    assert(StartAddr < EndAddr && StartAddr >= getPreferredBaseAddress() &&
-           "Function range is invalid.");
+    assert(StartAddr < EndAddr && "Function range is invalid.");
 
     auto Range = findFuncRange(StartAddr);
     if (!Range) {
@@ -1052,8 +1111,7 @@ void ProfiledBinary::loadSymbolsFromDWARFUnit(DWARFUnit &CompilationUnit) {
       uint64_t StartAddress = Range.LowPC;
       uint64_t EndAddress = Range.HighPC;
 
-      if (EndAddress <= StartAddress ||
-          StartAddress < getPreferredBaseAddress())
+      if (EndAddress <= StartAddress || StartAddress < getFirstTextAddress())
         continue;
 
       // We may want to know all ranges for one function. Here group the
@@ -1199,6 +1257,42 @@ StringRef ProfiledBinary::symbolizeDataAddress(uint64_t Address) {
                                               getSectionedAddress(Address)),
                     SymbolizerPath);
   return NameStrings.insert(DataDIGlobal.Name).first->getKey();
+}
+
+const ProfiledBinary::SectionRange *
+ProfiledBinary::findSectionRange(uint64_t Address) const {
+  const auto *It =
+      llvm::find_if(SectionRanges, [Address](const SectionRange &SR) {
+        return Address >= SR.StartAddress && Address < SR.EndAddress;
+      });
+  return It != SectionRanges.end() ? It : nullptr;
+}
+
+StringRef ProfiledBinary::resolveDataSymbol(uint64_t Address) {
+  const SectionRange *SR = findSectionRange(Address);
+  if (!SR)
+    return StringRef();
+
+  if (SR->IsText) {
+    // Read target address from literal pool.
+    uint64_t Offset = Address - SR->StartAddress;
+    uint32_t DerefedAddr =
+        support::endian::read32le(SR->Contents.data() + Offset);
+    if (DerefedAddr == 0)
+      return StringRef();
+
+    Address = DerefedAddr;
+    // Ensure resolved address is in a data section.
+    const SectionRange *NewSR = findSectionRange(Address);
+    if (!NewSR || NewSR->IsText)
+      return StringRef();
+  }
+
+  StringRef SymName = symbolizeDataAddress(Address);
+  if (SymName.empty() || SymName == "<unknown>" || SymName == "<invalid>")
+    return StringRef();
+
+  return SymName;
 }
 
 void ProfiledBinary::computeInlinedContextSizeForRange(uint64_t RangeBegin,
