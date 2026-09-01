@@ -79,6 +79,13 @@ void SampleProfileReader::dump(raw_ostream &OS) {
   sortFuncProfiles(Profiles, V);
   for (const auto &I : V)
     dumpFunctionProfile(*I.second, OS);
+  if (DataAccessProfileData && !DataAccessProfileData->empty()) {
+    OS << "Data access profile:\n";
+    for (const auto &[SymHandleRef, RecordRef] :
+         DataAccessProfileData->getRecords())
+      OS << std::get<StringRef>(SymHandleRef) << ":" << RecordRef.AccessCount
+         << "\n";
+  }
 }
 
 static void dumpFunctionProfileJson(const FunctionSamples &S,
@@ -395,6 +402,11 @@ std::error_code SampleProfileReaderText::readImpl() {
     // The only requirement we place on the identifier, then, is that it
     // should not begin with a number.
     if ((*LineIt)[0] != ' ') {
+      if (*LineIt == "[DataAccessProfiles]") {
+        if (std::error_code EC = readDataAccessProfiles(++LineIt))
+          return EC;
+        break;
+      }
       uint64_t NumSamples, NumHeadSamples;
       StringRef FName;
       if (!ParseHead(*LineIt, FName, NumSamples, NumHeadSamples)) {
@@ -535,12 +547,39 @@ std::error_code SampleProfileReaderText::readImpl() {
   return Result;
 }
 
+std::error_code
+SampleProfileReaderText::readDataAccessProfiles(line_iterator &LI) {
+  DataAccessProfileData = std::make_unique<memprof::DataAccessProfData>();
+  for (; !LI.is_at_eof(); ++LI) {
+    StringRef Line = LI->trim();
+    if (Line.empty() || Line[0] == '#')
+      continue;
+    auto [SymName, CountStr] = Line.rsplit(':');
+    if (SymName.empty() || CountStr.empty()) {
+      reportError(LI.line_number(), "Expected 'symbol:count', found " + *LI);
+      return sampleprof_error::malformed;
+    }
+    uint64_t Count = 0;
+    if (CountStr.getAsInteger(10, Count)) {
+      reportError(LI.line_number(),
+                  "Expected integer count, found " + CountStr);
+      return sampleprof_error::malformed;
+    }
+    if (Error E = DataAccessProfileData->setDataAccessProfile(SymName, Count))
+      consumeError(std::move(E));
+  }
+  return sampleprof_error::success;
+}
+
 bool SampleProfileReaderText::hasFormat(const MemoryBuffer &Buffer) {
   bool result = false;
 
-  // Check that the first non-comment line is a valid function header.
+  // Check that the first non-comment line is a valid function header
+  // or the start of a [DataAccessProfiles] section.
   line_iterator LineIt(Buffer, /*SkipBlanks=*/true, '#');
   if (!LineIt.is_at_eof()) {
+    if (LineIt->trim() == "[DataAccessProfiles]")
+      return true;
     if ((*LineIt)[0] != ' ') {
       uint64_t NumSamples, NumHeadSamples;
       StringRef FName;
@@ -1033,10 +1072,37 @@ std::error_code SampleProfileReaderExtBinaryBase::readOneSection(
             hasSecFlag(Entry, SecProfileSymbolListFlags::SecFlagMD5)))
       return EC;
     break;
+  case SecDataAccessProfile:
+    if (std::error_code EC = readDataAccessProfiles())
+      return EC;
+    break;
   default:
     if (std::error_code EC = readCustomSection(Entry))
       return EC;
     break;
+  }
+  return sampleprof_error::success;
+}
+
+std::error_code SampleProfileReaderExtBinaryBase::readDataAccessProfiles() {
+  if (Data >= End)
+    return sampleprof_error::success;
+  ErrorOr<uint64_t> NumEntries = readNumber<uint64_t>();
+  if (std::error_code EC = NumEntries.getError())
+    return EC;
+  if (*NumEntries == 0)
+    return sampleprof_error::success;
+  DataAccessProfileData = std::make_unique<memprof::DataAccessProfData>();
+  for (uint64_t I = 0; I < *NumEntries; ++I) {
+    ErrorOr<FunctionId> SymName = readStringFromTable();
+    if (std::error_code EC = SymName.getError())
+      return EC;
+    ErrorOr<uint64_t> Count = readNumber<uint64_t>();
+    if (std::error_code EC = Count.getError())
+      return EC;
+    if (Error E = DataAccessProfileData->setDataAccessProfile(
+            SymName->stringRef(), *Count))
+      consumeError(std::move(E));
   }
   return sampleprof_error::success;
 }

@@ -170,6 +170,9 @@ std::error_code SampleProfileWriter::write(const SampleProfileMap &ProfileMap) {
   if (std::error_code EC = writeFuncProfiles(ProfileMap))
     return EC;
 
+  if (std::error_code EC = writeDataAccessProfiles())
+    return EC;
+
   return sampleprof_error::success;
 }
 
@@ -452,6 +455,12 @@ std::error_code SampleProfileWriterExtBinaryBase::writeNameTableSection(
     addNames(I.second);
   }
 
+  if (DataAccessProfileData) {
+    for (const auto &[SymHandleRef, RecordRef] :
+         DataAccessProfileData->getRecords())
+      addName(FunctionId(std::get<StringRef>(SymHandleRef)));
+  }
+
   // If NameTable contains ".__uniq." suffix, set SecFlagUniqSuffix flag
   // so compiler won't strip the suffix during profile matching after
   // seeing the flag in the profile.
@@ -705,6 +714,10 @@ std::error_code SampleProfileWriterExtBinaryBase::writeOneSection(
     if (auto EC = writeProfileSymbolListSection())
       return EC;
     break;
+  case SecDataAccessProfile:
+    if (std::error_code EC = writeDataAccessProfiles())
+      return EC;
+    break;
   default:
     if (auto EC = writeCustomSection(Type))
       return EC;
@@ -726,8 +739,9 @@ std::error_code SampleProfileWriterExtBinary::writeDefaultLayout(
   // ProfSection / FuncOffsetSection are SecLBR* or SecComposite* after
   // configureCompositeProfile.
   const SecType Sections[] = {
-      SecProfSummary,       SecNameTable,      SecCSNameTable,  ProfSection,
-      SecProfileSymbolList, FuncOffsetSection, SecFuncMetadata,
+      SecProfSummary,  SecNameTable,         SecCSNameTable,
+      ProfSection,     SecProfileSymbolList, FuncOffsetSection,
+      SecFuncMetadata, SecDataAccessProfile,
   };
   for (SecType Type : Sections)
     if (std::error_code EC = writeOneSection(Type, ProfileMap))
@@ -758,6 +772,7 @@ std::error_code SampleProfileWriterExtBinary::writeCtxSplitLayout(
       {ProfSection, NestedProfileMap},    {FuncOffsetSection, NestedProfileMap},
       {ProfSection, FlatProfileMap},      {FuncOffsetSection, FlatProfileMap},
       {SecProfileSymbolList, ProfileMap}, {SecFuncMetadata, ProfileMap},
+      {SecDataAccessProfile, ProfileMap},
   };
   for (const auto &[Type, Map] : Sections)
     if (std::error_code EC = writeOneSection(Type, Map))
@@ -888,6 +903,21 @@ std::error_code SampleProfileWriterText::writeSample(const FunctionSamples &S) {
   return sampleprof_error::success;
 }
 
+std::error_code SampleProfileWriterText::writeDataAccessProfiles() {
+  if (!DataAccessProfileData || DataAccessProfileData->empty())
+    return sampleprof_error::success;
+  raw_ostream &OS = *OutputStream;
+  OS << "[DataAccessProfiles]\n";
+  LineCount++;
+  for (const auto &[SymHandleRef, RecordRef] :
+       DataAccessProfileData->getRecords()) {
+    OS << std::get<StringRef>(SymHandleRef) << ":" << RecordRef.AccessCount
+       << "\n";
+    LineCount++;
+  }
+  return sampleprof_error::success;
+}
+
 std::error_code
 SampleProfileWriterBinary::writeContextIdx(const SampleContext &Context) {
   assert(!Context.hasContext() && "cs profile is not supported");
@@ -969,6 +999,20 @@ SampleProfileWriterBinary::writeMagicIdent(SampleProfileFormat Format) {
   // Write file magic identifier.
   encodeULEB128(SPMagic(Format), OS);
   encodeULEB128(FormatVersion, OS);
+  return sampleprof_error::success;
+}
+
+std::error_code SampleProfileWriterExtBinaryBase::writeDataAccessProfiles() {
+  if (!DataAccessProfileData || DataAccessProfileData->empty())
+    return sampleprof_error::success;
+  const auto Records = DataAccessProfileData->getRecords();
+  encodeULEB128(Records.size(), *OutputStream);
+  for (const auto &[SymHandleRef, RecordRef] : Records) {
+    if (std::error_code EC =
+            writeNameIdx(FunctionId(std::get<StringRef>(SymHandleRef))))
+      return EC;
+    encodeULEB128(RecordRef.AccessCount, *OutputStream);
+  }
   return sampleprof_error::success;
 }
 

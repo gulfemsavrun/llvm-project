@@ -1646,6 +1646,7 @@ static void mergeSampleProfile(const WeightedFileVector &Inputs,
   sampleprof::ProfileSymbolList WriterList;
   std::optional<bool> ProfileIsProbeBased;
   std::optional<bool> ProfileIsCS;
+  MapVector<std::string, uint64_t, StringMap<unsigned>> MergedDataAccessCounts;
   for (const auto &Input : Inputs) {
     auto FS = vfs::getRealFileSystem();
     auto ReaderOrErr = SampleProfileReader::create(Input.Filename, Context, *FS,
@@ -1700,6 +1701,13 @@ static void mergeSampleProfile(const WeightedFileVector &Inputs,
       }
     }
 
+    if (const memprof::DataAccessProfData *DataProf =
+            Reader->getDataAccessProfileData()) {
+      for (const auto &[SymHandleRef, RecordRef] : DataProf->getRecords())
+        MergedDataAccessCounts[std::get<StringRef>(SymHandleRef).str()] +=
+            RecordRef.AccessCount * Input.Weight;
+    }
+
     if (!DropProfileSymbolList) {
       std::unique_ptr<sampleprof::ProfileSymbolList> ReaderList =
           Reader->getProfileSymbolList();
@@ -1745,6 +1753,15 @@ static void mergeSampleProfile(const WeightedFileVector &Inputs,
   auto Buffer = getInputFileBuf(ProfileSymbolListFile);
   handleExtBinaryWriter(*Writer, OutputFormat, Buffer.get(), WriterList,
                         CompressAllSections, UseMD5, GenPartialProfile);
+
+  if (!MergedDataAccessCounts.empty()) {
+    auto MergedDataAccessProf = std::make_unique<memprof::DataAccessProfData>();
+    for (const auto &[SymName, Count] : MergedDataAccessCounts) {
+      if (Error E = MergedDataAccessProf->setDataAccessProfile(SymName, Count))
+        consumeError(std::move(E));
+    }
+    Writer->setDataAccessProfData(std::move(MergedDataAccessProf));
+  }
 
   // If OutputSizeLimit is 0 (default), it is the same as write().
   if (std::error_code EC =

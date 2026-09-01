@@ -1057,4 +1057,64 @@ TEST(SampleProfCanonicalNameTest, InvalidPolicyDeathTest) {
 }
 #endif
 
+TEST_F(SampleProfTest, DataAccessProfile) {
+  StringRef Input = R"([DataAccessProfiles]
+global_hot_var:250
+global_cold_var:15
+)";
+  std::unique_ptr<MemoryBuffer> MemBuffer =
+      MemoryBuffer::getMemBufferCopy(Input, "profile");
+  IntrusiveRefCntPtr<vfs::FileSystem> FS = vfs::getRealFileSystem();
+  ErrorOr<std::unique_ptr<SampleProfileReader>> ReaderOrErr =
+      SampleProfileReader::create(MemBuffer, Context, *FS);
+  ASSERT_TRUE(NoError(ReaderOrErr.getError()));
+  std::unique_ptr<SampleProfileReader> ProfileReader =
+      std::move(ReaderOrErr.get());
+  ASSERT_TRUE(NoError(ProfileReader->read()));
+
+  auto VerifyReader = [](const SampleProfileReader &R) {
+    const memprof::DataAccessProfData *DAP = R.getDataAccessProfileData();
+    ASSERT_NE(nullptr, DAP);
+    std::optional<memprof::DataAccessProfRecord> HotRec =
+        DAP->getProfileRecord(StringRef("global_hot_var"));
+    ASSERT_TRUE(HotRec.has_value());
+    EXPECT_EQ(250u, HotRec->AccessCount);
+    std::optional<memprof::DataAccessProfRecord> ColdRec =
+        DAP->getProfileRecord(StringRef("global_cold_var"));
+    ASSERT_TRUE(ColdRec.has_value());
+    EXPECT_EQ(15u, ColdRec->AccessCount);
+  };
+
+  VerifyReader(*ProfileReader);
+
+  for (SampleProfileFormat Fmt :
+       {SampleProfileFormat::SPF_Text, SampleProfileFormat::SPF_Ext_Binary}) {
+    SmallVector<char, 128> OutBuf;
+    std::unique_ptr<raw_ostream> OS =
+        std::make_unique<raw_svector_ostream>(OutBuf);
+    ErrorOr<std::unique_ptr<SampleProfileWriter>> WriterOrErr =
+        SampleProfileWriter::create(OS, Fmt);
+    ASSERT_TRUE(NoError(WriterOrErr.getError()));
+    std::unique_ptr<SampleProfileWriter> ProfileWriter =
+        std::move(WriterOrErr.get());
+    auto WriterData = std::make_unique<memprof::DataAccessProfData>();
+    ASSERT_FALSE(static_cast<bool>(
+        WriterData->setDataAccessProfile(StringRef("global_hot_var"), 250)));
+    ASSERT_FALSE(static_cast<bool>(
+        WriterData->setDataAccessProfile(StringRef("global_cold_var"), 15)));
+    ProfileWriter->setDataAccessProfData(std::move(WriterData));
+    ASSERT_TRUE(NoError(ProfileWriter->write(ProfileReader->getProfiles())));
+
+    std::unique_ptr<MemoryBuffer> RoundTripBuf = MemoryBuffer::getMemBufferCopy(
+        StringRef(OutBuf.data(), OutBuf.size()), "roundtrip");
+    ErrorOr<std::unique_ptr<SampleProfileReader>> RTReaderOrErr =
+        SampleProfileReader::create(RoundTripBuf, Context, *FS);
+    ASSERT_TRUE(NoError(RTReaderOrErr.getError()));
+    std::unique_ptr<SampleProfileReader> RTReader =
+        std::move(RTReaderOrErr.get());
+    ASSERT_TRUE(NoError(RTReader->read()));
+    VerifyReader(*RTReader);
+  }
+}
+
 } // end anonymous namespace

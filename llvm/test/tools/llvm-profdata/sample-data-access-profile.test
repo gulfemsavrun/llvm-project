@@ -1,0 +1,40 @@
+; RUN: rm -rf %t && split-file %s %t
+; RUN: llvm-profdata show --sample %t/profile.proftext | FileCheck %s --check-prefix=SHOW
+; RUN: llvm-profdata merge --sample --extbinary %t/profile.proftext -o %t/profile.extbin
+; RUN: llvm-profdata show --sample %t/profile.extbin | FileCheck %s --check-prefix=SHOW
+; RUN: llvm-profdata merge --sample --extbinary --split-layout %t/profile.proftext -o %t/profile.split
+; RUN: llvm-profdata show --sample %t/profile.split | FileCheck %s --check-prefix=SHOW
+
+; RUN: llvm-profdata merge --sample --text %t/profile.proftext %t/profile.extbin -o - | FileCheck %s --check-prefix=MERGE
+; RUN: llvm-profdata merge --sample --text %t/profile.proftext %t/nodata.proftext -o - | FileCheck %s --check-prefix=MERGE-MIXED
+
+; SHOW: Function: foo: 100, 0, 1 sampled lines
+; SHOW: Samples collected in the function's body {
+; SHOW:   1: 10
+; SHOW: }
+; SHOW: Data access profile:
+; SHOW-DAG: _ZL3var:42
+; SHOW-DAG: bar_table:100
+
+; MERGE: foo:200:0
+; MERGE:  1: 20
+; MERGE: [DataAccessProfiles]
+; MERGE-DAG: _ZL3var:84
+; MERGE-DAG: bar_table:200
+
+; MERGE-MIXED: foo:150:0
+; MERGE-MIXED:  1: 15
+; MERGE-MIXED: [DataAccessProfiles]
+; MERGE-MIXED-DAG: _ZL3var:42
+; MERGE-MIXED-DAG: bar_table:100
+
+//--- profile.proftext
+foo:100:0
+ 1: 10
+[DataAccessProfiles]
+_ZL3var:42
+bar_table:100
+
+//--- nodata.proftext
+foo:50:0
+ 1: 5
