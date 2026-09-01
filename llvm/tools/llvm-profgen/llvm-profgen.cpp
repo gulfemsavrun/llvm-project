@@ -16,11 +16,17 @@
 #include "ProfileGenerator.h"
 #include "ProfiledBinary.h"
 #include "llvm/DebugInfo/Symbolize/SymbolizableModule.h"
+#include "llvm/ProfileData/DataAccessProf.h"
+#include "llvm/ProfileData/InstrProfCorrelator.h"
+#include "llvm/ProfileData/InstrProfWriter.h"
+#include "llvm/ProfileData/MemProf.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/VirtualFileSystem.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 using namespace sampleprof;
@@ -99,6 +105,22 @@ static cl::opt<std::string>
     TargetTriple("target-triple", cl::value_desc("triple"),
                  cl::desc("Override the target triple for the binary"),
                  cl::cat(ProfGenCategory));
+
+static cl::opt<InstrProfCorrelator::ProfCorrelatorKind> ProfileCorrelate(
+    "correlate",
+    cl::desc("Use debug info or binary file to correlate profiles."),
+    cl::init(InstrProfCorrelator::NONE),
+    cl::values(
+        clEnumValN(InstrProfCorrelator::NONE, "", "No profile correlation"),
+        clEnumValN(InstrProfCorrelator::DEBUG_INFO, "debug-info",
+                   "Use debug info to correlate"),
+        clEnumValN(InstrProfCorrelator::BINARY, "binary",
+                   "Use binary to correlate"),
+        clEnumValN(InstrProfCorrelator::BINARY_ALL, "binary-all",
+                   "Use binary to correlate including offloaded counters")),
+    cl::cat(ProfGenCategory));
+static cl::alias PCA("profile-correlate", cl::desc("Alias for --correlate"),
+                     cl::aliasopt(ProfileCorrelate));
 
 // Validate the command line input.
 static void validateCommandLine() {
@@ -254,7 +276,160 @@ int main(int argc, const char *argv[]) {
     std::unique_ptr<ProfileGeneratorBase> Generator =
         ProfileGeneratorBase::create(Binary.get(), Counters, ProfileIsCS);
     Generator->generateProfile();
+
+    // 1. Write sample-based code profile for AutoFDO.
     Generator->write();
+
+    // 2. Write the unified instrumented profile (containing both code and data)
+    // for LLD and PGO.
+    if ((!EtmReader && ProfileCorrelate == InstrProfCorrelator::NONE) ||
+        memprof::MaximumSupportedVersion < memprof::Version4)
+      return EXIT_SUCCESS;
+
+    StringRef Ext = sys::path::extension(OutputFilename);
+    SmallString<128> DataOutputFilename = StringRef(OutputFilename);
+    sys::path::replace_extension(DataOutputFilename, "");
+    DataOutputFilename += "-data";
+    DataOutputFilename += Ext;
+    std::error_code EC;
+    raw_fd_ostream OS(DataOutputFilename, EC, sys::fs::OF_None);
+    if (EC)
+      exitWithError("Could not open data profile output file: " + EC.message());
+
+    // The data access profiles are supported in MemProf Version 4 and above.
+    // Use the maximum supported version and enable the memory profile kind.
+    InstrProfWriter Writer(
+        /*Sparse=*/false, /*TemporalProfTraceReservoirSize=*/0,
+        /*MaxTemporalProfTraceLength=*/0, /*WritePrevVersion=*/false,
+        static_cast<memprof::IndexedVersion>(memprof::MaximumSupportedVersion));
+    if (EtmReader)
+      cantFail(Writer.mergeProfileKind(InstrProfKind::MemProf));
+    if (ProfileCorrelate != InstrProfCorrelator::NONE)
+      cantFail(Writer.mergeProfileKind(InstrProfKind::IRInstrumentation));
+
+    std::unique_ptr<InstrProfCorrelator> Correlator;
+    if (ProfileCorrelate != InstrProfCorrelator::NONE) {
+      std::string CorrelateFile =
+          (ProfileCorrelate == InstrProfCorrelator::DEBUG_INFO &&
+           !DebugBinPath.empty())
+              ? DebugBinPath
+              : BinaryPath;
+      if (auto Err = InstrProfCorrelator::get(CorrelateFile, ProfileCorrelate)
+                         .moveInto(Correlator))
+        exitWithError(std::move(Err), CorrelateFile);
+      if (auto Err = Correlator->correlateProfileData(/*MaxWarnings=*/0))
+        exitWithError(std::move(Err), CorrelateFile);
+    }
+
+    if (Correlator) {
+      InstrProfSymtab Symtab;
+      if (Error E = Symtab.create(StringRef(Correlator->getNamesPointer(),
+                                            Correlator->getNamesSize())))
+        exitWithError(std::move(E), BinaryPath);
+
+      // Build a lookup map from function name to total samples.
+      StringMap<uint64_t> FuncNameToSamples;
+      for (const auto &Entry : Generator->getProfileMap())
+        FuncNameToSamples[Entry.second.getContext().toString()] =
+            Entry.second.getTotalSamples();
+
+      StringSet<> CorrelatedFunctions;
+      auto CorrelateAndAddRecords = [&](auto *CorrelatorImpl) {
+        auto *Data = CorrelatorImpl->getDataPointer();
+        size_t NumData = CorrelatorImpl->getDataSize();
+
+        // Build a mapping from (FuncHash, CounterIndex) -> Count
+        // by matching ETM range samples with counter sites.
+        std::map<std::pair<uint64_t, uint32_t>, uint64_t> SiteCounts;
+        auto *Sites = CorrelatorImpl->getSitesPointer();
+        size_t NumSites = CorrelatorImpl->getSitesSize();
+        if (Sites && NumSites > 0 && Counters) {
+          for (const auto &CI : *Counters) {
+            for (const auto &Range : CI.second.RangeCounter) {
+              uint64_t RangeStart = Range.first.first;
+              uint64_t RangeEnd = Range.first.second;
+              uint64_t Count = Range.second;
+
+              for (size_t S = 0; S < NumSites; ++S) {
+                uint64_t BBAddr = Sites[S].BBAddress;
+                if (RangeStart <= BBAddr && BBAddr <= RangeEnd) {
+                  SiteCounts[{Sites[S].FuncHash, Sites[S].Index}] += Count;
+                }
+              }
+            }
+          }
+        }
+
+        for (size_t I = 0; I < NumData; ++I) {
+          const auto &ProfData = Data[I];
+          StringRef FuncName = Symtab.getFuncOrVarName(ProfData.NameRef);
+          if (FuncName.empty())
+            continue;
+          uint64_t FuncHash = ProfData.FuncHash;
+          uint32_t NumCounters = ProfData.NumCounters;
+
+          uint64_t TotalSamples = FuncNameToSamples.lookup(FuncName);
+          CorrelatedFunctions.insert(FuncName);
+
+          std::vector<uint64_t> Counts;
+          if (NumCounters > 0) {
+            Counts.resize(NumCounters, 0);
+            Counts[0] = TotalSamples;
+            for (uint32_t C = 0; C < NumCounters; ++C) {
+              auto It = SiteCounts.find({FuncHash, C});
+              if (It != SiteCounts.end() && It->second > 0)
+                Counts[C] = It->second;
+            }
+          } else {
+            Counts = {TotalSamples};
+          }
+
+          NamedInstrProfRecord Record(FuncName, FuncHash, std::move(Counts));
+          Writer.addRecord(std::move(Record),
+                           [](Error E) { consumeError(std::move(E)); });
+        }
+      };
+
+      if (Correlator->getKind() == InstrProfCorrelator::CK_64Bit) {
+        CorrelateAndAddRecords(
+            cast<InstrProfCorrelatorImpl<uint64_t>>(Correlator.get()));
+      } else {
+        CorrelateAndAddRecords(
+            cast<InstrProfCorrelatorImpl<uint32_t>>(Correlator.get()));
+      }
+
+      // Add any remaining sampled functions not present in the correlation
+      // metadata.
+      for (const auto &Entry : Generator->getProfileMap()) {
+        std::string FuncName = Entry.second.getContext().toString();
+        if (CorrelatedFunctions.contains(FuncName))
+          continue;
+        uint64_t FuncHash = IndexedInstrProf::ComputeHash(FuncName);
+        uint64_t TotalSamples = Entry.second.getTotalSamples();
+        NamedInstrProfRecord Record(FuncName, FuncHash, {TotalSamples});
+        Writer.addRecord(std::move(Record),
+                         [](Error E) { consumeError(std::move(E)); });
+      }
+    } else {
+      // Add function execution counts from the SampleProfileMap.
+      for (const auto &Entry : Generator->getProfileMap()) {
+        const SampleContext &Context = Entry.second.getContext();
+        std::string FuncName = Context.toString();
+        uint64_t FuncHash = IndexedInstrProf::ComputeHash(FuncName);
+        uint64_t TotalSamples = Entry.second.getTotalSamples();
+
+        NamedInstrProfRecord Record(FuncName, FuncHash, {TotalSamples});
+        Writer.addRecord(std::move(Record),
+                         [](Error E) { consumeError(std::move(E)); });
+      }
+    }
+
+    // Add DataAccessProfData from ETM reader.
+    if (EtmReader)
+      Writer.addDataAccessProfData(EtmReader->takeDataAccessProfData());
+
+    if (Error E = Writer.write(OS))
+      exitWithError(toString(std::move(E)));
   }
 
   return EXIT_SUCCESS;

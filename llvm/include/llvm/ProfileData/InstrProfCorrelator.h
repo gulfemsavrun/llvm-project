@@ -38,7 +38,7 @@ class InstrProfCorrelator {
 public:
   /// Indicate if we should use the debug info or profile metadata sections to
   /// correlate.
-  enum ProfCorrelatorKind { NONE, DEBUG_INFO, BINARY };
+  enum ProfCorrelatorKind { NONE, DEBUG_INFO, BINARY, BINARY_ALL };
 
   LLVM_ABI static llvm::Expected<std::unique_ptr<InstrProfCorrelator>>
   get(StringRef Filename, ProfCorrelatorKind FileKind,
@@ -95,6 +95,8 @@ protected:
     const char *DataEnd;
     const char *NameStart;
     size_t NameSize;
+    const char *SitesStart = nullptr;
+    const char *SitesEnd = nullptr;
     /// Resolved values for Mach-O linker fixup chains when FileKind is Binary.
     /// The mapping is from an address relative to the start of __llvm_covdata,
     /// to the resolved pointer value at that address.
@@ -137,6 +139,13 @@ private:
   const InstrProfCorrelatorKind Kind;
 };
 
+template <class IntPtrT> struct ProfileCounterSite {
+  IntPtrT BBAddress;
+  uint32_t Index;
+  uint32_t Reserved;
+  uint64_t FuncHash;
+};
+
 /// InstrProfCorrelatorImpl - A child of InstrProfCorrelator with a template
 /// pointer type so that the ProfileData vector can be materialized.
 template <class IntPtrT>
@@ -154,12 +163,21 @@ public:
   /// Return the number of ProfileData elements.
   size_t getDataSize() const { return Data.size(); }
 
+  /// Return a pointer to the underlying ProfileCounterSite vector.
+  const ProfileCounterSite<IntPtrT> *getSitesPointer() const {
+    return Sites.empty() ? nullptr : Sites.data();
+  }
+
+  /// Return the number of ProfileCounterSite elements.
+  size_t getSitesSize() const { return Sites.size(); }
+
   static llvm::Expected<std::unique_ptr<InstrProfCorrelatorImpl<IntPtrT>>>
   get(std::unique_ptr<InstrProfCorrelator::Context> Ctx,
       const object::ObjectFile &Obj, ProfCorrelatorKind FileKind);
 
 protected:
   std::vector<RawInstrProf::ProfileData<IntPtrT>> Data;
+  std::vector<ProfileCounterSite<IntPtrT>> Sites;
 
   Error correlateProfileData(int MaxWarnings) override;
   virtual void correlateProfileDataImpl(
@@ -183,7 +201,7 @@ protected:
 private:
   InstrProfCorrelatorImpl(InstrProfCorrelatorKind Kind,
                           std::unique_ptr<InstrProfCorrelator::Context> Ctx)
-      : InstrProfCorrelator(Kind, std::move(Ctx)){};
+      : InstrProfCorrelator(Kind, std::move(Ctx)) {};
   llvm::DenseSet<IntPtrT> CounterOffsets;
   llvm::DenseSet<IntPtrT> BitmapOffsets;
 };

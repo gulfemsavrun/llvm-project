@@ -1,0 +1,8 @@
+; Verify that llvm-profgen exposes the correlation command-line options.
+; RUN: llvm-profgen --help | FileCheck %s --check-prefix=HELP
+; RUN: llvm-profgen --help-hidden | FileCheck %s --check-prefix=HIDDEN
+
+; HELP: --correlate=<value>
+; HELP:   =debug-info
+; HELP:   =binary
+; HIDDEN: --profile-correlate

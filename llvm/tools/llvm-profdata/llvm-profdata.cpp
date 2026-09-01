@@ -147,12 +147,14 @@ static cl::opt<ProfCorrelatorKind> BIDFetcherProfileCorrelate(
     cl::desc("Use debug-info or binary correlation to correlate profiles with "
              "build id fetcher"),
     cl::init(InstrProfCorrelator::NONE),
-    cl::values(clEnumValN(InstrProfCorrelator::NONE, "",
-                          "No profile correlation"),
-               clEnumValN(InstrProfCorrelator::DEBUG_INFO, "debug-info",
-                          "Use debug info to correlate"),
-               clEnumValN(InstrProfCorrelator::BINARY, "binary",
-                          "Use binary to correlate")));
+    cl::values(
+        clEnumValN(InstrProfCorrelator::NONE, "", "No profile correlation"),
+        clEnumValN(InstrProfCorrelator::DEBUG_INFO, "debug-info",
+                   "Use debug info to correlate"),
+        clEnumValN(InstrProfCorrelator::BINARY, "binary",
+                   "Use binary to correlate"),
+        clEnumValN(InstrProfCorrelator::BINARY_ALL, "binary-all",
+                   "Use binary to correlate including offloaded counters")));
 static cl::opt<std::string> FuncNameFilter(
     "function",
     cl::desc("Only functions matching the filter are shown in the output. For "
@@ -2840,6 +2842,8 @@ static void showValueSitesStats(raw_fd_ostream &OS, uint32_t VK,
   }
 }
 
+static int showMemProfProfile(ShowFormat SFormat, raw_fd_ostream &OS);
+
 static int showInstrProfile(ShowFormat SFormat, raw_fd_ostream &OS) {
   if (SFormat == ShowFormat::Json)
     exitWithError("JSON output is not supported for instr profiles");
@@ -3087,6 +3091,9 @@ static int showInstrProfile(ShowFormat SFormat, raw_fd_ostream &OS) {
         OS << "    " << Reader->getSymtab().getFuncOrVarName(NameRef) << "\n";
     }
   }
+
+  if (Reader->hasMemoryProfile())
+    return showMemProfProfile(SFormat, OS);
 
   return 0;
 }

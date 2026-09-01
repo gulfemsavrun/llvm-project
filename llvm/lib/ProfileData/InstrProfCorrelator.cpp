@@ -58,11 +58,16 @@ InstrProfCorrelator::Context::get(std::unique_ptr<MemoryBuffer> Buffer,
                                   object::ObjectFile &Obj,
                                   ProfCorrelatorKind FileKind) {
   auto C = std::make_unique<Context>();
-  auto CountersSection = getInstrProfSection(Obj, IPSK_cnts);
+  auto CountersSection = getInstrProfSection(Obj, IPSK_covcnts);
+  if (auto Err = CountersSection.takeError()) {
+    consumeError(std::move(Err));
+    CountersSection = getInstrProfSection(Obj, IPSK_cnts);
+  }
   if (auto Err = CountersSection.takeError())
     return std::move(Err);
   Triple::ObjectFormatType ObjFormat = Obj.getTripleObjectFormat();
-  if (FileKind == InstrProfCorrelator::BINARY) {
+  if (FileKind == InstrProfCorrelator::BINARY ||
+      FileKind == InstrProfCorrelator::BINARY_ALL) {
     auto DataSection = getInstrProfSection(Obj, IPSK_covdata);
     if (auto Err = DataSection.takeError())
       return std::move(Err);
@@ -79,6 +84,18 @@ InstrProfCorrelator::Context::get(std::unique_ptr<MemoryBuffer> Buffer,
     C->DataEnd = DataOrErr->data() + DataOrErr->size();
     C->NameStart = NameOrErr->data();
     C->NameSize = NameOrErr->size();
+
+    auto SitesSection = getInstrProfSection(Obj, IPSK_covsites);
+    if (SitesSection) {
+      if (auto SitesOrErr = SitesSection->getContents()) {
+        C->SitesStart = SitesOrErr->data();
+        C->SitesEnd = SitesOrErr->data() + SitesOrErr->size();
+      } else {
+        consumeError(SitesOrErr.takeError());
+      }
+    } else {
+      consumeError(SitesSection.takeError());
+    }
 
     if (ObjFormat == Triple::MachO) {
       std::string FullSectionName =
@@ -690,6 +707,20 @@ void BinaryInstrProfCorrelator<IntPtrT>::correlateProfileDataImpl(
     IntPtrT BitmapOffset = BitmapPtr - BitmapStart;
     this->addDataProbe(I->NameRef, I->FuncHash, CounterOffset, BitmapOffset,
                        I->FunctionPointer, I->NumCounters, I->NumBitmapBytes);
+  }
+
+  if (this->Ctx->SitesStart && this->Ctx->SitesEnd) {
+    using RawSite = ProfileCounterSite<IntPtrT>;
+    const RawSite *SiteStart = (const RawSite *)this->Ctx->SitesStart;
+    const RawSite *SiteEnd = (const RawSite *)this->Ctx->SitesEnd;
+    for (const RawSite *S = SiteStart; S < SiteEnd; ++S) {
+      ProfileCounterSite<IntPtrT> Site;
+      Site.BBAddress = this->template maybeSwap<IntPtrT>(S->BBAddress);
+      Site.Index = this->template maybeSwap<uint32_t>(S->Index);
+      Site.Reserved = this->template maybeSwap<uint32_t>(S->Reserved);
+      Site.FuncHash = this->template maybeSwap<uint64_t>(S->FuncHash);
+      this->Sites.push_back(Site);
+    }
   }
 }
 
