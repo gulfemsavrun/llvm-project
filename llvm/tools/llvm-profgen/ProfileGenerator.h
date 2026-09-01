@@ -39,6 +39,7 @@ public:
       : Binary(Binary), ProfileMap(std::move(Profiles)){};
 
   virtual ~ProfileGeneratorBase() = default;
+  const SampleProfileMap &getProfileMap() const { return ProfileMap; }
   static std::unique_ptr<ProfileGeneratorBase>
   create(ProfiledBinary *Binary, const ContextSampleCounterMap *Counters,
          bool profileIsCS);
