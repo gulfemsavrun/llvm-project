@@ -16,11 +16,16 @@
 #include "ProfileGenerator.h"
 #include "ProfiledBinary.h"
 #include "llvm/DebugInfo/Symbolize/SymbolizableModule.h"
+#include "llvm/ProfileData/DataAccessProf.h"
+#include "llvm/ProfileData/InstrProfWriter.h"
+#include "llvm/ProfileData/MemProf.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/VirtualFileSystem.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 using namespace sampleprof;
@@ -254,7 +259,50 @@ int main(int argc, const char *argv[]) {
     std::unique_ptr<ProfileGeneratorBase> Generator =
         ProfileGeneratorBase::create(Binary.get(), Counters, ProfileIsCS);
     Generator->generateProfile();
+
+    // 1. Write sample-based code profile for AutoFDO.
     Generator->write();
+
+    // 2. Write the unified instrumented profile (containing both code and data)
+    // for LLD.
+    if (!EtmReader || memprof::MaximumSupportedVersion < memprof::Version4)
+      return EXIT_SUCCESS;
+
+    StringRef Ext = sys::path::extension(OutputFilename);
+    SmallString<128> DataOutputFilename = StringRef(OutputFilename);
+    sys::path::replace_extension(DataOutputFilename, "");
+    DataOutputFilename += "-data";
+    DataOutputFilename += Ext;
+    std::error_code EC;
+    raw_fd_ostream OS(DataOutputFilename, EC, sys::fs::OF_None);
+    if (EC)
+      exitWithError("Could not open data profile output file: " + EC.message());
+
+    // The data access profiles are supported in MemProf Version 4 and above.
+    // Use the maximum supported version and enable the memory profile kind.
+    InstrProfWriter Writer(
+        /*Sparse=*/false, /*TemporalProfTraceReservoirSize=*/0,
+        /*MaxTemporalProfTraceLength=*/0, /*WritePrevVersion=*/false,
+        static_cast<memprof::IndexedVersion>(memprof::MaximumSupportedVersion));
+    cantFail(Writer.mergeProfileKind(InstrProfKind::MemProf));
+
+    // Add function execution counts from the SampleProfileMap.
+    for (const auto &Entry : Generator->getProfileMap()) {
+      const SampleContext &Context = Entry.second.getContext();
+      std::string FuncName = Context.toString();
+      uint64_t FuncHash = IndexedInstrProf::ComputeHash(FuncName);
+      uint64_t TotalSamples = Entry.second.getTotalSamples();
+
+      NamedInstrProfRecord Record(FuncName, FuncHash, {TotalSamples});
+      Writer.addRecord(std::move(Record),
+                       [](Error E) { consumeError(std::move(E)); });
+    }
+
+    // Add DataAccessProfData from ETM reader.
+    Writer.addDataAccessProfData(EtmReader->takeDataAccessProfData());
+
+    if (Error E = Writer.write(OS))
+      exitWithError(toString(std::move(E)));
   }
 
   return EXIT_SUCCESS;

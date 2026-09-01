@@ -1478,9 +1478,33 @@ SmallVector<CleanupInstaller, 2> PerfScriptReader::TempFileCleanups;
 
 void ETMReader::recordProcessedRange(uint64_t Start, uint64_t End,
                                      uint64_t Count) {
+  if (Start > End)
+    return;
+
+  uint32_t Size = Binary->getCodeAddrVecSize();
+  if (Size == 0)
+    return;
+
+  uint64_t MaxAddr = Binary->getAddressforIndex(Size - 1);
+  if (Start > MaxAddr || End > MaxAddr)
+    return;
+
   assert(!Counters.empty() && "Counters should not be empty!");
   auto &Counter = Counters.begin()->second;
   Counter.recordRangeCount(Start, End, Count);
+
+  // Track data access profile from memory references within the executed range.
+  uint32_t StartIndex = Binary->getIndexForAddr(Start);
+  uint32_t EndIndex = Binary->getIndexForAddr(End);
+  if (StartIndex < Size) {
+    uint32_t UpperBound = std::min(EndIndex, Size - 1);
+    for (uint32_t I = StartIndex; I <= UpperBound; ++I) {
+      uint64_t Addr = Binary->getAddressforIndex(I);
+      StringRef SymName = Binary->getDataReferencedByInstruction(Addr);
+      if (!SymName.empty())
+        DataAccessCounts[SymName] += Count;
+    }
+  }
 }
 
 class ETMCallback : public ETMDecoder::Callback {
@@ -1528,6 +1552,16 @@ void ETMReader::parseETMTraces() {
   ETMCallback CB(this);
   if (Error E = Decoder->processTrace(TraceSlice, CB))
     exitWithError(toString(std::move(E)));
+}
+
+std::unique_ptr<memprof::DataAccessProfData>
+ETMReader::takeDataAccessProfData() {
+  auto DataAccessProfData = std::make_unique<memprof::DataAccessProfData>();
+  for (const auto &Entry : DataAccessCounts)
+    if (Error E =
+            DataAccessProfData->setDataAccessProfile(Entry.first, Entry.second))
+      consumeError(std::move(E));
+  return DataAccessProfData;
 }
 
 } // end namespace sampleprof
