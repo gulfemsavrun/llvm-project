@@ -538,6 +538,28 @@ void MachineFunction::deleteMachineInstr(MachineInstr *MI) {
   InstructionRecycler.Deallocate(Allocator, MI);
 }
 
+static bool hasProfileCounters(const Function &F) {
+  return llvm::any_of(F, [](const BasicBlock &BB) {
+    if (const Instruction *TI = BB.getTerminatorOrNull())
+      return TI->hasMetadata("prof_counter");
+    return false;
+  });
+}
+
+static uint32_t getProfileCounterBBID(const BasicBlock *BB) {
+  if (!BB)
+    return UINT32_MAX;
+  const Instruction *TI = BB->getTerminatorOrNull();
+  if (!TI)
+    return UINT32_MAX;
+  const MDNode *MD = TI->getMetadata("prof_counter");
+  if (!MD || MD->getNumOperands() == 0)
+    return UINT32_MAX;
+  if (auto *CI = mdconst::dyn_extract<ConstantInt>(MD->getOperand(0)))
+    return CI->getZExtValue();
+  return UINT32_MAX;
+}
+
 /// Allocate a new MachineBasicBlock. Use this instead of
 /// `new MachineBasicBlock'.
 MachineBasicBlock *
@@ -549,8 +571,14 @@ MachineFunction::CreateMachineBasicBlock(const BasicBlock *BB,
   // Set BBID for `-basic-block-sections=list` and `-basic-block-address-map` to
   // allow robust mapping of profiles to basic blocks.
   if (Target.Options.BBAddrMap ||
-      Target.getBBSectionsType() == BasicBlockSection::List)
-    MBB->setBBID(BBID.has_value() ? *BBID : UniqueBBID{NextBBID++, 0});
+      Target.getBBSectionsType() == BasicBlockSection::List) {
+    if (BBID.has_value())
+      MBB->setBBID(*BBID);
+    else if (NextBBID == 0 && hasProfileCounters(F))
+      MBB->setBBID(UniqueBBID{getProfileCounterBBID(BB), 0});
+    else
+      MBB->setBBID(UniqueBBID{NextBBID++, 0});
+  }
   return MBB;
 }
 

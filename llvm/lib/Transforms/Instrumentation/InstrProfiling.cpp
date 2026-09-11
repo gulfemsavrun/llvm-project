@@ -1278,6 +1278,16 @@ Value *InstrLowerer::getBitmapAddress(InstrProfMCDCTVBitmapUpdate *I) {
 
 void InstrLowerer::lowerCover(InstrProfCoverInst *CoverInstruction) {
   if (shouldOffloadCounters(ProfileCorrelate)) {
+    BasicBlock *BB = CoverInstruction->getParent();
+    LLVMContext &Ctx = BB->getContext();
+    uint32_t Index = CoverInstruction->getIndex()->getZExtValue();
+
+    if (Instruction *TI = BB->getTerminator())
+      TI->setMetadata(
+          "prof_counter",
+          MDNode::get(Ctx, {ConstantAsMetadata::get(ConstantInt::get(
+                               Type::getInt32Ty(Ctx), Index))}));
+
     CoverInstruction->eraseFromParent();
     return;
   }
@@ -1346,6 +1356,16 @@ InstrLowerer::getOrCreateGPUInvariants(Function *F) {
 
 void InstrLowerer::lowerIncrement(InstrProfIncrementInst *Inc) {
   if (shouldOffloadCounters(ProfileCorrelate)) {
+    BasicBlock *BB = Inc->getParent();
+    LLVMContext &Ctx = BB->getContext();
+    uint32_t Index = Inc->getIndex()->getZExtValue();
+
+    if (Instruction *TI = BB->getTerminator())
+      TI->setMetadata(
+          "prof_counter",
+          MDNode::get(Ctx, {ConstantAsMetadata::get(ConstantInt::get(
+                               Type::getInt32Ty(Ctx), Index))}));
+
     Inc->eraseFromParent();
     return;
   }
