@@ -2895,6 +2895,8 @@ static void showValueSitesStats(raw_fd_ostream &OS, uint32_t VK,
   }
 }
 
+static int showMemProfProfile(ShowFormat SFormat, raw_fd_ostream &OS);
+
 static int showInstrProfile(ShowFormat SFormat, raw_fd_ostream &OS) {
   if (SFormat == ShowFormat::Json)
     exitWithError("JSON output is not supported for instr profiles");
@@ -3142,6 +3144,9 @@ static int showInstrProfile(ShowFormat SFormat, raw_fd_ostream &OS) {
         OS << "    " << Reader->getSymtab().getFuncOrVarName(NameRef) << "\n";
     }
   }
+
+  if (Reader->hasMemoryProfile())
+    return showMemProfProfile(SFormat, OS);
 
   return 0;
 }

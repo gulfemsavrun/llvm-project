@@ -15,6 +15,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
@@ -280,6 +281,19 @@ class ProfiledBinary {
   // Address to instruction size map. Also used for quick Address lookup.
   DenseMap<uint64_t, uint64_t> AddressToInstSizeMap;
 
+  // Address to referenced data symbol map.
+  DenseMap<uint64_t, StringRef> AddressToDataSymbolMap;
+
+  struct SectionRange {
+    StringRef Name;
+    uint64_t StartAddress;
+    uint64_t EndAddress;
+    StringRef Contents;
+    bool IsText;
+  };
+  SmallVector<SectionRange, 16> SectionRanges;
+  const SectionRange *findSectionRange(uint64_t Address) const;
+
   // An array of Addresses of all instructions sorted in increasing order. The
   // sorting is needed to fast advance to the next forward/backward instruction.
   std::vector<uint64_t> CodeAddressVec;
@@ -442,6 +456,10 @@ public:
   /// Symbolize an address and return the symbol name. The returned StringRef is
   /// owned by this ProfiledBinary object.
   StringRef symbolizeDataAddress(uint64_t Address);
+  StringRef resolveDataSymbol(uint64_t Address);
+  StringRef getDataReferencedByInstruction(uint64_t InstrAddr) const {
+    return AddressToDataSymbolMap.lookup(InstrAddr);
+  }
 
   void decodePseudoProbe();
 
@@ -467,6 +485,8 @@ public:
       return PreferredTextSegmentAddresses[0];
     return PreferredTextSegmentAddresses[0] - TextSegmentOffsets[0];
   }
+  // Return the actual unrounded start address of the first text section.
+  uint64_t getFirstTextAddress() const;
   // Return the preferred base address derived from the first loadable segment.
   uint64_t getFirstLoadableAddress() const { return FirstLoadableAddress; }
   // Return the file offset for the first executable segment.
