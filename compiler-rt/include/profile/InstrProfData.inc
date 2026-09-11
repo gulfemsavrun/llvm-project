@@ -410,6 +410,9 @@ INSTR_PROF_SECT_ENTRY(IPSK_covname, \
 INSTR_PROF_SECT_ENTRY(IPSK_covinit, \
                       INSTR_PROF_QUOTE(INSTR_PROF_COVINIT_COMMON), \
                       INSTR_PROF_COVINIT_COFF, "__LLVM_COV,")
+INSTR_PROF_SECT_ENTRY(IPSK_covcnts, \
+                      INSTR_PROF_QUOTE(INSTR_PROF_COVCNTS_COMMON), \
+                      INSTR_PROF_COVCNTS_COFF, "__LLVM_COV,")
 
 #undef INSTR_PROF_SECT_ENTRY
 #endif
@@ -834,6 +837,7 @@ serializeValueProfDataFrom(ValueProfRecordClosure *Closure,
 #define INSTR_PROF_COVDATA_COMMON __llvm_covdata
 #define INSTR_PROF_COVNAME_COMMON __llvm_covnames
 #define INSTR_PROF_COVINIT_COMMON __llvm_covinit
+#define INSTR_PROF_COVCNTS_COMMON __llvm_covcnts
 
 /* Windows section names. Because these section names contain dollar characters,
  * they must be quoted.
@@ -849,11 +853,12 @@ serializeValueProfDataFrom(ValueProfRecordClosure *Closure,
 #define INSTR_PROF_VTAB_COFF ".lprfvt$M"
 #define INSTR_PROF_COVMAP_COFF ".lcovmap$M"
 #define INSTR_PROF_COVFUN_COFF ".lcovfun$M"
-/* Since cov data and cov names sections are not allocated, we don't need to
+/* Since cov data, cov names, and cov cnts sections are not allocated, we don't need to
  * access them at runtime.
  */
 #define INSTR_PROF_COVDATA_COFF ".lcovd"
 #define INSTR_PROF_COVNAME_COFF ".lcovn"
+#define INSTR_PROF_COVCNTS_COFF ".lcovc"
 
 // FIXME: Placeholder for Windows. Windows currently does not initialize
 // the GCOV functions in the runtime.
@@ -897,6 +902,7 @@ serializeValueProfDataFrom(ValueProfRecordClosure *Closure,
 #define INSTR_PROF_COVDATA_SECT_NAME INSTR_PROF_QUOTE(INSTR_PROF_COVDATA_COMMON)
 #define INSTR_PROF_COVNAME_SECT_NAME INSTR_PROF_QUOTE(INSTR_PROF_COVNAME_COMMON)
 #define INSTR_PROF_COVINIT_SECT_NAME INSTR_PROF_QUOTE(INSTR_PROF_COVINIT_COMMON)
+#define INSTR_PROF_COVCNTS_SECT_NAME INSTR_PROF_QUOTE(INSTR_PROF_COVCNTS_COMMON)
 #endif
 
 /* Macros to define start/stop section symbol for a given

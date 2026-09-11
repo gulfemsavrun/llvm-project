@@ -82,7 +82,18 @@ LLVM_ABI cl::opt<InstrProfCorrelator::ProfCorrelatorKind> ProfileCorrelate(
                clEnumValN(InstrProfCorrelator::DEBUG_INFO, "debug-info",
                           "Use debug info to correlate"),
                clEnumValN(InstrProfCorrelator::BINARY, "binary",
-                          "Use binary to correlate")));
+                          "Use binary to correlate"),
+               clEnumValN(InstrProfCorrelator::BINARY_ALL, "binary-all",
+                          "Use binary to correlate and offload counters")));
+
+static bool isBinaryCorrelate(InstrProfCorrelator::ProfCorrelatorKind K) {
+  return K == InstrProfCorrelator::BINARY ||
+         K == InstrProfCorrelator::BINARY_ALL;
+}
+
+static bool shouldOffloadCounters(InstrProfCorrelator::ProfCorrelatorKind K) {
+  return K == InstrProfCorrelator::BINARY_ALL;
+}
 } // namespace llvm
 
 namespace {
@@ -1266,6 +1277,10 @@ Value *InstrLowerer::getBitmapAddress(InstrProfMCDCTVBitmapUpdate *I) {
 }
 
 void InstrLowerer::lowerCover(InstrProfCoverInst *CoverInstruction) {
+  if (shouldOffloadCounters(ProfileCorrelate)) {
+    CoverInstruction->eraseFromParent();
+    return;
+  }
   auto *Addr = getCounterAddress(CoverInstruction);
   IRBuilder<> Builder(CoverInstruction);
   if (ConditionalCounterUpdate) {
@@ -1330,6 +1345,10 @@ InstrLowerer::getOrCreateGPUInvariants(Function *F) {
 }
 
 void InstrLowerer::lowerIncrement(InstrProfIncrementInst *Inc) {
+  if (shouldOffloadCounters(ProfileCorrelate)) {
+    Inc->eraseFromParent();
+    return;
+  }
   IRBuilder<> Builder(Inc);
   if (isGPUProfTarget(M)) {
     Function *F = Inc->getFunction();
@@ -1843,7 +1862,10 @@ GlobalVariable *InstrLowerer::setupProfileSection(InstrProfInstBase *Inc,
   }
 
   Ptr->setVisibility(Visibility);
-  Ptr->setSection(getInstrProfSectionName(IPSK, TT.getObjectFormat()));
+  InstrProfSectKind TargetIPSK = IPSK;
+  if (IPSK == IPSK_cnts && shouldOffloadCounters(ProfileCorrelate))
+    TargetIPSK = IPSK_covcnts;
+  Ptr->setSection(getInstrProfSectionName(TargetIPSK, TT.getObjectFormat()));
   Ptr->setLinkage(Linkage);
   if (isGPUProfTarget(M) && !Ptr->hasComdat()) {
     Ptr->setComdat(M.getOrInsertComdat(VarName));
@@ -2162,7 +2184,7 @@ void InstrLowerer::createDataVariable(InstrProfCntrInstBase *Inc) {
   InstrProfSectKind DataSectionKind;
   // With binary profile correlation, profile data is not loaded into memory.
   // profile data must reference profile counter with an absolute relocation.
-  if (ProfileCorrelate == InstrProfCorrelator::BINARY) {
+  if (isBinaryCorrelate(ProfileCorrelate)) {
     DataSectionKind = IPSK_covdata;
     RelativeCounterPtr = ConstantExpr::getPtrToInt(CounterPtr, IntPtrTy);
     if (BitmapPtr != nullptr)
@@ -2360,7 +2382,7 @@ void InstrLowerer::emitNameData() {
   NamesSize = CompressedNameStr.size();
   setGlobalVariableLargeSection(TT, *NamesVar);
   std::string NamesSectionName =
-      ProfileCorrelate == InstrProfCorrelator::BINARY
+      isBinaryCorrelate(ProfileCorrelate)
           ? getInstrProfSectionName(IPSK_covname, TT.getObjectFormat())
           : getInstrProfSectionName(IPSK_name, TT.getObjectFormat());
   NamesVar->setSection(NamesSectionName);

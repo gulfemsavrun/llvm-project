@@ -58,11 +58,16 @@ InstrProfCorrelator::Context::get(std::unique_ptr<MemoryBuffer> Buffer,
                                   object::ObjectFile &Obj,
                                   ProfCorrelatorKind FileKind) {
   auto C = std::make_unique<Context>();
-  auto CountersSection = getInstrProfSection(Obj, IPSK_cnts);
+  auto CountersSection = getInstrProfSection(Obj, IPSK_covcnts);
+  if (auto Err = CountersSection.takeError()) {
+    consumeError(std::move(Err));
+    CountersSection = getInstrProfSection(Obj, IPSK_cnts);
+  }
   if (auto Err = CountersSection.takeError())
     return std::move(Err);
   Triple::ObjectFormatType ObjFormat = Obj.getTripleObjectFormat();
-  if (FileKind == InstrProfCorrelator::BINARY) {
+  if (FileKind == InstrProfCorrelator::BINARY ||
+      FileKind == InstrProfCorrelator::BINARY_ALL) {
     auto DataSection = getInstrProfSection(Obj, IPSK_covdata);
     if (auto Err = DataSection.takeError())
       return std::move(Err);

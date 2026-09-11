@@ -38,7 +38,7 @@ class InstrProfCorrelator {
 public:
   /// Indicate if we should use the debug info or profile metadata sections to
   /// correlate.
-  enum ProfCorrelatorKind { NONE, DEBUG_INFO, BINARY };
+  enum ProfCorrelatorKind { NONE, DEBUG_INFO, BINARY, BINARY_ALL };
 
   LLVM_ABI static llvm::Expected<std::unique_ptr<InstrProfCorrelator>>
   get(StringRef Filename, ProfCorrelatorKind FileKind,

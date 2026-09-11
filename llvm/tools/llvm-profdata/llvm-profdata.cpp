@@ -156,12 +156,14 @@ static cl::opt<ProfCorrelatorKind> BIDFetcherProfileCorrelate(
     cl::desc("Use debug-info or binary correlation to correlate profiles with "
              "build id fetcher"),
     cl::init(InstrProfCorrelator::NONE),
-    cl::values(clEnumValN(InstrProfCorrelator::NONE, "",
-                          "No profile correlation"),
-               clEnumValN(InstrProfCorrelator::DEBUG_INFO, "debug-info",
-                          "Use debug info to correlate"),
-               clEnumValN(InstrProfCorrelator::BINARY, "binary",
-                          "Use binary to correlate")));
+    cl::values(
+        clEnumValN(InstrProfCorrelator::NONE, "", "No profile correlation"),
+        clEnumValN(InstrProfCorrelator::DEBUG_INFO, "debug-info",
+                   "Use debug info to correlate"),
+        clEnumValN(InstrProfCorrelator::BINARY, "binary",
+                   "Use binary to correlate"),
+        clEnumValN(InstrProfCorrelator::BINARY_ALL, "binary-all",
+                   "Use binary to correlate including offloaded counters")));
 static cl::opt<std::string> FuncNameFilter(
     "function",
     cl::desc("Only functions matching the filter are shown in the output. For "
